@@ -15,18 +15,23 @@
  */
 package com.squareup.picasso3;
 
+import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.ImageDecoder;
 import android.graphics.drawable.Drawable;
 import android.net.NetworkInfo;
 import android.os.Build;
 import android.support.annotation.DrawableRes;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
+import android.util.Size;
 import android.util.TypedValue;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import okio.BufferedSource;
 import okio.Okio;
 import okio.Source;
@@ -193,6 +198,13 @@ public abstract class RequestHandler {
 
   static void calculateInSampleSize(int reqWidth, int reqHeight, int width, int height,
       BitmapFactory.Options options, Request request) {
+    int sampleSize = getSampleSize(reqWidth, reqHeight, width, height, request);
+    options.inSampleSize = sampleSize;
+    options.inJustDecodeBounds = false;
+  }
+
+  static int getSampleSize(int reqWidth, int reqHeight, int width, int height,
+      Request request) {
     int sampleSize = 1;
     if (height > reqHeight || width > reqWidth) {
       final int heightRatio;
@@ -209,8 +221,7 @@ public abstract class RequestHandler {
             : Math.min(heightRatio, widthRatio);
       }
     }
-    options.inSampleSize = sampleSize;
-    options.inJustDecodeBounds = false;
+    return sampleSize;
   }
 
   /**
@@ -218,9 +229,41 @@ public abstract class RequestHandler {
    * about the supplied request in order to do the decoding efficiently (such as through leveraging
    * {@code inSampleSize}).
    */
-  static Bitmap decodeStream(Source source, Request request) throws IOException {
+  static Bitmap decodeStream(Source source, final Request request) throws IOException {
     BufferedSource bufferedSource = Okio.buffer(source);
 
+    if (Build.VERSION.SDK_INT >= 28) {
+      return decodeStreamP(request, bufferedSource);
+    }
+
+    return decodeStreamPreP(request, bufferedSource);
+  }
+
+  @TargetApi(28)
+  @SuppressLint("Override")
+  private static Bitmap decodeStreamP(final Request request, BufferedSource bufferedSource)
+      throws IOException {
+    ImageDecoder.Source imageSource =
+        ImageDecoder.createSource(ByteBuffer.wrap(bufferedSource.readByteArray()));
+
+    return ImageDecoder.decodeBitmap(imageSource,
+        new ImageDecoder.OnHeaderDecodedListener() {
+          @Override
+          public void onHeaderDecoded(ImageDecoder imageDecoder, ImageDecoder.ImageInfo imageInfo,
+              ImageDecoder.Source source) {
+            Size size = imageInfo.getSize();
+
+            int sampleSize =
+                getSampleSize(request.targetWidth, request.targetHeight,
+                    size.getWidth(), size.getHeight(), request);
+
+            imageDecoder.setResize(sampleSize);
+          }
+        });
+  }
+
+  private static Bitmap decodeStreamPreP(Request request, BufferedSource bufferedSource)
+      throws IOException {
     boolean isWebPFile = Utils.isWebPFile(bufferedSource);
     boolean isPurgeable = request.purgeable && Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP;
     BitmapFactory.Options options = RequestHandler.createBitmapOptions(request);
